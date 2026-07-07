@@ -1,0 +1,1149 @@
+---------------------------------------------------------------------------------------------------
+V1.8.415:
+20260618
+
+Force-close Modbus connection after every execute + add timestamps
+
+Audit of all the_modbus_master.execute calls across SetModbus,
+SetModbusDoubleCheck, WaitModbusSingleEqual and WaitModbusMutiEqual to
+guarantee no PLC connection is ever left open.
+
+- SetModbusDoubleCheck: the verify read-back never closed its socket and
+  it was reused/leaked across retries; now force-close immediately after
+  both the write and the read execute, and reconnect at the top of the
+  write block.
+- WaitModbusSingleEqual / WaitModbusMutiEqual: reconnect at the top of
+  the poll try-block instead of relying on the except path. Previously
+  every other poll raised AttributeError (master was None after close)
+  and printed a misleading "read value fail"; the except now only fires
+  on genuine errors.
+- Add _force_close_modbus before the someonecontrol/timeout return paths
+  so those never leak either.
+- Append time={time.time()} to every Modbus operation print for timing.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+---------------------------------------------------------------------------------------------------
+V1.8.414:
+20260616
+
+1. add NO 105 amr
+2. NO 115 and 100 change as c9014
+3. add setup_modbus_route.sh                                            
+	用途：將 192.168.88.8 打造成 Modbus TCP 透明代理閘道  
+	讓同一網段的 TM 手臂或任何 Modbus Client，無需修改設定 
+	就能透過 DNAT 轉發，存取後端任意台 Modbus Server。   
+4. Now localTaskManager will precompile...
+    "/home/pyuser", "/data/etc/extra_mscript" and "/data/etc/extra_ui"
+    when AMR is booting up
+---------------------------------------------------------------------------------------------------
+V1.8.413:
+20260522
+
+    問題根源：兩組 wpa_supplicant 在搶 wlan0
+    
+      ┌─────────────────────┬──────┬──────────────────────────────────────────────┬──────────────┐
+      │        來源         │ PID  │                   啟動方式                   │    Driver    │
+      ├─────────────────────┼──────┼──────────────────────────────────────────────┼──────────────┤
+      │ systemd service     │ 3501 │ systemctl start wpa_supplicant@wlan0.service │ nl80211,wext │
+      ├─────────────────────┼──────┼──────────────────────────────────────────────┼──────────────┤
+      │ ifupdown (wpa-roam) │ 671  │ /etc/network/if-pre-up.d/wpasupplicant       │ wext         │
+      └─────────────────────┴──────┴──────────────────────────────────────────────┴──────────────┘
+    
+      /data/etc/network/interfaces.d/wlan0.cfg 設定了 wpa-roam，在 ifup 時自動啟動 wpa_supplicant，與 systemd service 衝突。
+    
+      ---
+      需要修改的檔案（不在 wifi_robot 範圍）
+    
+      ┌──────────────────────────────────────────┬─────────────────────────────────────────┐
+      │                   檔案                   │                修改內容                 │
+      ├──────────────────────────────────────────┼─────────────────────────────────────────┤
+      │ /data/etc/network/interfaces.d/wlan0.cfg │ 移除 wpa-driver wext 和 wpa-roam 這兩行 │
+      └──────────────────────────────────────────┴─────────────────────────────────────────┘
+    
+      ---
+      請問是否要修改 /data/etc/network/interfaces.d/wlan0.cfg？
+    
+      如果不修改這個檔案，即使修改 wifi_robot 也無法解決問題，因為 wpa_supplicant 衝突是系統設定問題。
+    
+    ✻ Crunched for 3m 52s
+    
+    ❯ 移除 wpa-driver wext 和 wpa-roam 這兩行 會有其他問題媽
+    
+    ● 分析移除這兩行的影響：
+    
+      wpa-driver wext
+      - 指定用 wext driver 連線
+      - systemd service 已用 nl80211,wext（更現代的驅動）
+      - 移除後：ifupdown 不會再用 wext driver，無影響
+    
+      wpa-roam /data/etc/wpa_supplicant/wpa_supplicant.conf
+      - 這行是讓 ifupdown 在 wlan0 UP 時自動啟動 wpa_supplicant
+      - 這就是造成兩個 wpa_supplicant 衝突的根本原因
+      - 移除後：ifup 不會再啟動獨立的 wpa_supplicant，只靠 systemd service
+    
+      ---
+      移除後的行為：
+    
+      ┌────────────────┬───────────────────────────────────────────────┐
+      │      項目      │                     變化                      │
+      ├────────────────┼───────────────────────────────────────────────┤
+      │ wpa_supplicant │ 只由 systemd service 管理（不會再衝突）       │
+      ├────────────────┼───────────────────────────────────────────────┤
+      │ DHCP 取得 IP   │ 由 systemd-networkd 或 _dhcp 設定處理（正常） │
+      ├────────────────┼───────────────────────────────────────────────┤
+      │ wifi_robot     │ 能正常控制 wpa_supplicant（不會有兩進程問題） │
+      └────────────────┴───────────────────────────────────────────────┘
+    
+      風險評估：
+      - 低風險 - 如果這台機器主要靠 systemd 管理網路，移除後不影響正常運作
+      - 如果未來需要用 ifup/ifdown 管理 wifi，則需要確保 systemd service 正常運行
+---------------------------------------------------------------------------------------------------
+V1.8.412:
+20260522
+
+1. 修正 V1.8.410 V1.8.409 更新後 無法自動開機成功
+2. 修正 tarsearch 設定錯 cl_platform_name 後無法正常開機問題
+3. 目前更新完 kernel 會造成下次無法正常TPM 開機成功因次暫時把這功能先關了 20260525
+---------------------------------------------------------------------------------------------------
+V1.8.410:
+20260518
+
+1. Add pre-compile command for "device.py", "Script.py" and "elevator.py"
+---------------------------------------------------------------------------------------------------
+V1.8.409:
+20260515
+
+1. 修正當 motor free 後 FMS 仍對 AMR 下STOP命令 會造成 AMR 推一半沒法推動問題
+2. 修正多 camera rtsp 仍可以正常工作
+3. 加入開機如果是預設密碼(12345678)開機 就會自動改成 TMP 輸入密碼開機 並且移除預設密碼
+---------------------------------------------------------------------------------------------------
+V1.8.408:
+20260504
+1. 修正 電量可能會跳躍的問題
+2. 修正網路檢查 getway 一次檢查不到就重啟 wifi 問題 因為 ICMP 封包可能會漏掉的問題
+3. 修正刪除檔案 限制在 在 1個核心內
+4. 啟動時清理前次異常中止殘留的暫存檔
+5. 
+    wifi_robot: 強化 Wi-Fi 檢查與重連穩定性，降低誤判重置
+    
+    - 新增 reset/reconfigure 冷卻機制，避免服務剛重啟即被下一輪 check 再次觸發重置
+    - 調整 check 判斷：每輪動態取得 gateway，支援 Gateway Reachable=N/A，避免 route 暫時缺失造成誤判
+    - 新增多層 debounce：gateway 失敗、一般網路失敗、WPA-only 失敗皆採連續次數門檻
+    - 對 WPA_OK=0 且 IP 存在情境優先執行 targeted reconnect/soft recovery，降低不必要 driver reset
+    - 強化 ResetWifi 流程：等待介面出現、link up、關聯成功、IP 取得，並輸出 link_up/assoc/ip 診斷資訊
+    - 支援 reconfigure/disconnect/reconnect/disable_network 在既有 wifi_robot 執行中時可強制接管，立即生效
+6. fix cve_2026_31432 issue
+---------------------------------------------------------------------------------------------------
+V1.8.407:
+20260421
+
+Fixed bug::修正v.1.8.406為了改善桃園工廠的旋轉問題，導致當機器以非停靠方向面對Dock時，會出現亂轉問題
+---------------------------------------------------------------------------------------------------
+V1.8.406:
+20260417
+
+1. 修正桃園工廠Dock2A會原地旋轉問題，原因為Z型停車(路邊停車)鏡射點選擇錯誤，應加入旋轉角度判斷
+2. add:
+   player boot add more information:
+
+	--- System Status Check ---
+	Machine Model:
+	SIMULATOR
+	Software Version:
+	V1.8.387
+	Disk Usage (/data):
+	91G available (Used:) 37%
+	Config File Path:
+	/data/map8192/onlytable_1cm.sim/Fake-CL.cfg
+3. 開機檢查 /data 硬碟是否超過 98% 如果超過強制將 /data/dump 內的資料都清空
+---------------------------------------------------------------------------------------------------
+V1.8.405:
+20260414
+
+1. 修正在充電站狀態下按下 motor free 機器推出來定位會爛掉問題
+---------------------------------------------------------------------------------------------------
+V1.8.403:
+20260414
+
+1. Fresh flag logic split into 2 paths in clientproxy.cc and clientproxy.h:
+	Polling path: IsFresh()/NotFresh() uses mFresh
+	Callback path: signal uses mFreshCallback
+	They can be used together without interfering.
+	Callback auto-clear behavior updated in clientproxy.cc:
+	mInfo->fresh is consumed from incoming data event.
+	Callback is emitted only when there is registered callback (num_slots() > 0).
+	PlayerClient::Read() stop/read behavior fixed in playerclient.cc:
+	Internal reader thread still respects stop request.
+	Manual/synchronous Read() (Python polling use case) still works even if mIsStop is true.
+	This fixes Python Read()+IsFresh() not getting data while preserving clean shutdown
+---------------------------------------------------------------------------------------------------
+V1.8.402:
+20260413
+
+1. change compiler to debian 12
+2. use std::thread to replace boost::thread
+3. use std::file_system to replace boost::file_system
+4. Make sure "taskmanager.cpp" not crash when getting NULL data or string
+    ==============
+    1. Make sure "taskmanager.cpp" not crash when getting NULL data or string
+    2. Update RootFs
+5. in hoayuSLAM_driver.cpp, fix an index bug. (when use 5mm resolution map will crash problem)
+6. 修改 PathPlanning.cpp
+    在 RobotShapePathPlanning_OpenCL_init 和 PathPlanning_OpenCL_init 的平台选择逻辑中：
+    如果 cfg 里的 platformName 没有匹配到任何实际可用的 OpenCL 平台
+    则自动读取硬件实际的 CL_PLATFORM_NAME
+    将 platformName 回退到实际硬件平台名，并使用该平台继续 OpenCL 初始化
+    现在当 cfg 名称和硬件名称不一致时，代码会直接使用硬件端实际平台名来继续运行。
+7. update PLAYER_DISPATCH_AI_EMERGENCY_BUTTON with show read light LED
+8. Fixed bug: 修正CtrlLag導致Dock在錯誤的位置回報成功，因為充電穩定訊號是 750ms，Lag超過1000ms，導致AI以為自己在充電站上
+9. fix wifi reconfigure failure problem
+10. remove rear RGB camera to reduce CPU use rate
+---------------------------------------------------------------------------------------------------
+V1.8.401:
+20260120
+
+1. 修正遠距離直接Dock Bug
+---------------------------------------------------------------------------------------------------
+V1.8.400:
+20260114
+
+1. No 104 change IPC no audio problem
+2. 改善狹小空間Dock行為/空間判斷條件
+3. 解決靜止狀態下，緊急按鈕解除後沒有恢復狀態問題
+4. fix 0F PCB motor stop no voice alarm
+---------------------------------------------------------------------------------------------------
+V1.8.399:
+20251231
+
+1. improve dock at narrow environment 改善窄巷Dock成功機率
+2. 改善直接停靠，不符標準問題
+---------------------------------------------------------------------------------------------------
+V1.8.398:
+20251212
+1. Improve the "LaserDockSearch-plugin"
+    
+    ==========
+    1. Change the detection mechanic
+    (Use "LaserDockSearch-plugin_laser_hokuyo_pass_all.cpp" now)
+    
+    2. Update the old one, maybe it will be useful in future
+    ("LaserDockSearch-plugin_laser_hokuyo.cpp")
+    
+    3. Update RootFS
+    
+    4. Improve & Update the dock_viewer test client
+    
+   主要是 laser 辨識板看不到會影響到camera的校準
+---------------------------------------------------------------------------------------------------
+V1.8.397:
+20251208
+1. improved dock at narrow environment
+2. Change the docking laser pattern threshold for all Olei laser
+---------------------------------------------------------------------------------------------------
+V1.8.396:
+20251204
+1. 修正 處理/data/dump 內的檔案會把整個 /data/dump 內清到10萬個以下並不是每個資料夾都限制10萬個
+   正確的結果是 /data/dump 內所有子資料夾 都允許礎存 10萬個檔案 超過會殺到10萬個以下
+---------------------------------------------------------------------------------------------------
+V1.8.395:
+20251124
+1. 修正重啟 record all 程序造成 SLAM 歸0問題
+---------------------------------------------------------------------------------------------------
+V1.8.394:
+20251121
+1. 先處理過多的資料檔案 在處理容量佔據過多的檔案 每個資料夾檔案上限10萬個
+---------------------------------------------------------------------------------------------------
+V1.8.393:
+20251113
+1. 先處理過多的資料檔案 在處理容量佔據過多的檔案
+---------------------------------------------------------------------------------------------------
+V1.8.392:
+20251111
+1. 修正超量的檔案 無法正卻被刪除問題
+2. add record all plugin (卡哥說tag輸出的資訊有時是錯的因此加上)
+---------------------------------------------------------------------------------------------------
+V1.8.391:
+20251106
+1. 預防Dock位置移動導致的提前停靠
+2. 修正Track在一開始遭遇阻擋時，可能出現的接軌錯誤
+---------------------------------------------------------------------------------------------------
+V1.8.390:
+20251104
+1. add client_lib will packe necessary library from system (it can use for ROS2 bridge)
+2. 修正設定固定IP狀態下 gateway 內沒有 AMR相關的 arp 資訊造成外部裝置看不到AMR的問題
+3. add NO 99 machine
+4. update remove /data/dump file use linux script not use python script
+5. fix AMR C901 default size not correct problem
+6. fix wpa_supplicant start failure problem. the folder "/var/run/wpa_supplicant/" still here cause problem
+---------------------------------------------------------------------------------------------------
+V1.8.389:
+20251021
+1. add machine 100, 104
+2. 修正 Date 大幅倒退時，重啟Camera導致的ai crush
+3. fixed bug: Dock2Dock 改變停靠位置時會出現bug (未使用之前停靠資訊，造成出站錯誤)
+4. 修正Dock時，遇到一些例外狀況時該如何處理 (ex.未到目標點就有充電訊號)
+---------------------------------------------------------------------------------------------------
+V1.8.388:
+20251015
+1. 修正模擬器機器不行走的問題，dataRange 和 dataRangeXYZ 不同，統一使用XYZ
+2. 修正鏡頭更新頻率
+3. try 2:
+   確保 stop/start wpa_supplicant 可以正確運行 (之前有個問題設定完網路後必須重開機才會正常就是這個造成的)
+4. 修正連網更新時 如果超過一定時間需要 timeout掉她 因為可能是 server端出了狀況
+5. 當dump內檔案超過 50萬個就會開始減量 過多的檔案會造成 PP 卡死
+6. 時間同步後會寫入 RTC (RTC 時間與 真實時間落差過大會造成player crash) 下次重開機後才會回復正常因為已經寫入 RTC內部
+7. wifi 重連後會強制清除 原有IP並且重新取得
+8. 修正靜態 IP 狀態下 因為沒有設定 arp table 造成外部 ping 不到的問題
+---------------------------------------------------------------------------------------------------
+V1.8.387:
+20250926
+1. [system]
+   a. amr_list.json 檔案內會新增 port 資訊方便之後的 AGV 也要納入交管所做的修改
+   b. 一對2控制盒 fix for power board 0F version
+   c. fix realsense timestamp
+   d. add rear RGB camera for tag search
+   e. 確保 stop/start wpa_supplicant 可以正確運行 (之前有個問題設定完網路後必須重開機才會正常就是這個造成的)
+---------------------------------------------------------------------------------------------------
+V1.8.386:
+20250926
+1. [system]
+   a. amr_list.json 檔案內會新增 port 資訊方便之後的 AGV 也要納入交管所做的修改
+   b. 一對2控制盒 fix for power board 0F version
+   c. fix realsense timestamp
+   d. add rear RGB camera for tag search
+   e. 確保 stop/start wpa_supplicant 可以正確運行 (之前有個問題設定完網路後必須重開機才會正常就是這個造成的)
+---------------------------------------------------------------------------------------------------
+V1.8.385:
+20250919
+[System]
+    1.  時間搓誤信 chat-gpt 因此修正 V1.8.384 特有的 bug
+---------------------------------------------------------------------------------------------------
+V1.8.384:
+20250918
+[AI]
+    1.修正PathFollow時，障礙物擋路，因Avoid引起的無限PP，不會TimeOut
+    2.改善Avoid狀態顯示
+[System]
+    1.  odometery 修正AMR沒動但 odometery 會有數值跳動問題
+---------------------------------------------------------------------------------------------------
+V1.8.383:
+20250905
+[AI]
+    1. 修正連結靠牆軌道時，Track會回報脫軌的Bug
+	2. 修正Pause一段時間後會回報TimeOut (不影響FMS，因為FMS預設開啟Retry)
+[System]
+    1. AVX2 intrinsic 效能比單純 for 迴圈快 5~20 倍，取決於 CPU for 16bit -> 8bit image
+	2. C901-70::出廠校正
+---------------------------------------------------------------------------------------------------
+V1.8.382:
+20250826
+
+[system]
+	加入日本語
+---------------------------------------------------------------------------------------------------
+V1.8.381:
+20250819
+
+[system]
+	上版改錯了 造成 wifi 無法從舊版設定產出正確設定質,以致無法連上網路
+
+---------------------------------------------------------------------------------------------------
+V1.8.380:
+20250819
+
+[AI]
+    1. Fixed bug:修正長時間停靠充電站時，因Odometry內插補值，造成機器定位移動，之後收到命令時，因AI定位錯誤緣故，導致行走錯誤 (穿越虛擬牆 ... etc)
+    2. 統一格式：重新定位指定位置改為使用target傳遞 (原為 data，不方便使用)統一格式：重新定位指定位置改為使用target傳遞 (
+---------------------------------------------------------------------------------------------------
+V1.8.379:
+20250815
+
+[system]
+    1. Update msirobot.cfg - No.69 IPC to No.60
+	2. 修正設定完網路之後無法正確連上問題
+	
+---------------------------------------------------------------------------------------------------
+V1.8.378:
+20250813
+
+[AI]
+    1. Fixed bug::一收到命令就暫停，因沒有得到軌道資訊，造成之後行為錯誤
+    2. M2T/PF 在脫困期間，持續顯示 Retry/TimeOut資訊
+    3. 修正模擬PP路徑後，使用動態繞路時，會使用到錯誤的起始位置，造成接點錯誤
+[system]
+    1. 放大組裝工差 右後方 LDS 加大忽略區 0.5度
+    2. 針對 IPv6 DHCP server 所做的修改
+---------------------------------------------------------------------------------------------------
+V1.8.377:
+20250808
+
+[AI]
+    1. 增加重新定位檢查模式
+[SLAM]
+    1. in hoayuSLAM, add rangefinder_in_wall_n() for checking assing position is good than the result of  meshsearch.
+[System]
+    1. fix: 某些廉價路由器或 AP 會「記住」最後一個分配的 IP，直接複用給下一台裝置，沒有做 ARP 檢查（Address Conflict Detection）。
+       或者 DHCP 租約表沒有被正確更新。
+---------------------------------------------------------------------------------------------------
+V1.8.376:
+20250807
+
+[AI]
+    1. 修正Dock時，遇到障礙物時 retry & timeOut顯示錯誤問題
+    2. Pause時持續顯示路徑
+	
+[system]
+    1. 改採用 systemd-networkd.service wpa_supplicant@wlan0.service   進行無線網路的管理 這是標準做法不然wpa_supplicant 掛掉會沒人管
+	   大幅改善 wifi roaming過程容易斷線 還有工廠環境下 wifi 連不上的問題
+---------------------------------------------------------------------------------------------------
+V1.8.375:
+20250801
+
+[System]
+    1.  in fakerobot.cpp, add setting battery by vw.
+	
+[AI]
+   in pathplanning,
+    1. in cl, modify CheckPathWalkableXYOinWallDistanceRunAsGpu() and add CheckPathWalkableXYOinWallDistanceWithoutonewayCheckRunAsGpu() for quickly checking path without oneway check.
+    2. in pathplanning.cpp,
+    2.1. move PathMinimizeXYO_cossinsafepathxyo and PathMinimizeXYO_atan2safepathxyo to global for new and delete only once.
+    2.2. add robotsafedistance_fuzzyrate in SmoothPathSearchingMapMultipleTarget() input for ignoring robotsafedistance in the begin and end of path.
+    2.3. use RobotShape_PathAdjustment() in debug_mode==1.
+    2.4. modify RobotShape_PathAdjustment() for safe path.
+    2.5. when RobotShape_PathAdjustment() return <0, there is no safe path.
+    2.6. modify some "#pragma omp parallel for" to "#pragma omp parallel for schedule(guided)" for calculating speed.
+   
+    3. in behavior_pathplan.cpp, modify SmoothPathSearchingMapMultipleTarget() input.
+    4. Fixed bug::亂轉
+    5. Fixed bug::直線異常緩慢 <- 動態路線銜接錯誤
+	
+---------------------------------------------------------------------------------------------------
+V1.8.374:
+20250729
+
+[AI]
+    1. Nav2 can show traffic map
+    2. Fixed PF bug
+[System]
+    修正當 有人啟動 mutex 前強制暫停功能的狀態下
+    如果已經有amr在mutex 範圍內了但外面那台AMR暫停了數秒過後他會走2秒後又暫停的問題
+
+---------------------------------------------------------------------------------------------------
+V1.8.373:
+20250729
+
+[AI]
+    1. recover PathPlanning.cpp to 20250623 temporarily.
+	2. Fixed bug: 修正ShowTarget未初始化，導致AI crush bug
+	3. 動態繞路
+    4. 即時最短路徑
+	
+[Systmem]
+    1. 修正交管需要 pm 啟動才能運行的問題，模擬器不需要pm 因此取消相依性
+---------------------------------------------------------------------------------------------------
+V1.8.372:
+20250724
+[System]
+    1. 模擬器不需要啟動電源管理程序
+    2. in fakerobot.cpp, modify client and server code for unstable connection.
+    3. TC.     加入允許控制 停在dock上面允不允許mutex area發揮作用，預設質是停在充電站上面mutex area不發揮作用 但有些應用會需要發揮作用
+    4. 減少 device 開啟 port 的數量
+[AI]
+    1. 緊急按鈕配合0f版修正，改為暫停，解除後恢復行動
+    2. 提升警戒、危險範圍的預設行走速度
+    3. 修正側邊過近時，M2T、PF不會避障
+    4. 修正 75度以上的彎，機器會脫軌問題 (目前需靠FMS設定限速區)
+    5. 提升警戒、危險範圍的預設行走速度
+    
+[SLAM]
+    1. add hoayuSLAM.cpp.code.opencl_float
+       in hoayuSLAM_driver.cpp.org, add a file flush example:
+            //fflush(dump_SLAM_file);
+            //fsync(fileno(dump_SLAM_file));
+---------------------------------------------------------------------------------------------------
+V1.8.371:
+20250714
+[AI]
+    1. Fixed : 使用單一Tag修正時，誤判 F & C 資訊，造成停靠錯誤
+    2. test 模擬器轉向錯誤: 間格僅 30ms ，Position 跳了 30 cm，先改為停下後需要最低等待 1.5 sec
+    3. 緊急按鈕改為暫停
+    4. 修正Stop時的位置跳躍
+[System]
+    1. 根據之後急停開關只斷掉 動力電所做的修改
+    2. 影像2質化改用新方法且計算量可以維持跟之前一樣
+---------------------------------------------------------------------------------------------------
+V1.8.370:
+20250630
+[AI]
+    1. in PathPlanning.cpp, in PP_mode=1 Radius, changes using Original_PathAdjustment to RobotShape_PathAdjustment because the path of Original_PathAdjustment is bad when robot is near obstacle.
+    2. Fixed bug: Track脫軌檢測失效
+    3. Fixed bug: 急停
+    
+[System]
+    1. increase BLE beacon update frequency
+    2. speed up camera record 5s once become 1s
+    3. 更精準的 LDS 跟 odom 對準 No94 No92 No90 No78
+    
+
+---------------------------------------------------------------------------------------------------
+V1.8.369:
+20250624
+[AI]
+  1. 解決定位錯誤時，精準停靠無限迴圈問題
+---------------------------------------------------------------------------------------------------
+V1.8.368:
+20250623
+[AI]
+  1. 導入使用單一Tag輔助精準停靠
+  2. in PathPlanning,
+    a. add NonBlockLoadARobotShapePathPlanningCompressionFile_filename_setting NonBlockLoadARobotShapePathPlanningCompressionFile_creategoldblock_using NonBlockLoadARobotShapePathPlanningCompressionFile_createnull_using mutex for fixing multiple call functions bug.
+    b. modify some print for debug.
+    c. modify some float type to int type by using round() in OpenCL.
+[TC]
+  1. 為了避免 pause/resume 反覆所以限制速度要夠快才會拿推估資訊來用
+---------------------------------------------------------------------------------------------------
+V1.8.367:
+20250618
+[system]
+    1. 移動 create_robot_patten 到工具區
+    2. 修正1對2控制盒在速度項輸出會有鋸齒狀問題
+    3. 修正以下問題所產生出來無法進入救援模式問題
+       fix:
+        詳細問題敘述，請參考 MSI bug tracking system – SlamRobot
+        AMR版本：V1.8.363
+        FMS 版本 ：Ver 4.8.8 beta46
+        Bugs#1478: System_回報音效問題
+        說明：
+        當機器在PAUSE狀態下 此時插入搖桿進行遙控
+        而插入遙控完成移轉控制權的通知時
+        語音並非PLEASE wait for ai ready , ai is ready
+        而是( 救援模式的語音)
+    4. in hoayuSLAM_driver.cpp, modify:
+      a. Publish PLAYER_POSITION2D_DATA_STATE only when Slam_count is changed.
+      b. Publish PLAYER_POSITION2D_DATA_STATE xya is calculated from slam+(odometry[-1]-odometry[-2])/(odometry_time[-1]-odometry_time[-2])*(nowtime-slam_time)
+    5. 修正當 AMR 透過 pause 鍵長壓釋放煞車後去推動 AMR 在經過 mutex area 或離開會有停頓的問題
+    6. BLE 根據真實實驗數據來看 傳輸能量調整最強 資料傳輸速度調為 128Kbps 看來收訊效果最好
+    7. TC 修正藍芽資訊會以最新的會立即蓋掉舊的 造成一些狀況，因此改用list 來保存5s內的所有藍芽資訊來使用
+    8. TC fix SLAM jump cause AMR go in the mutex area but SLAM jump back to non mutex area problem
+    9. TC speed up the update frequenxy
+    10. update C901-77 msirobot.cfg 原因，更換雷射
+    11. fix wifi fix IP disconnect and connect again will change use DHCP problem
+    
+    
+[AI]
+    1.修正等待障礙物的Bug
+    2.增加轉彎時的沿點準度、減少晃動
+    3.Fixed bug::沿點副程式錯誤
+    4.精準物體停靠的功能改為使用參數
+    5.改善暫停或等待時，機器被人推動後，接續行走容易卡住
+    6.改善PF副程式的原地旋轉
+    7.PF在移動到目標點時，Pause/Resume有機會會讓它亂轉
+    8.修正軌道跟隨原地旋轉
+---------------------------------------------------------------------------------------------------
+V1.8.366:
+20250529
+[AI]
+	1. update C901-95, C901-66 msirobot.cfg
+	2. improve pf
+---------------------------------------------------------------------------------------------------
+V1.8.365:
+20250528
+[AI]  
+    1. 修正跟隨錯誤
+[System]
+    1. fix pack ./release.sh pack version not correct problem
+---------------------------------------------------------------------------------------------------
+V1.8.364:
+20250527
+[AI]  
+    1. 修正 Fiducial沒訊號時的最高等待時間
+    2. Fixed bug:: turn theta
+    3. Fixed bug::修正Undock時，遇到 Sensor lost，高機率會回報失敗
+    4. 修正 Follow 的沿點準度
+    5. 修正Stop引發的Control lag
+    6. 修正暫停或等待障礙物時的脫軌接續不順
+    
+[TF]
+    1. try to fix meLeavingAwayMutex
+    2. 在FMS上面進行更換AMR(譬如 AMR89下 AMR90上)狀態下會出狀況的問題
+    3. 加入 如果短暫時間內周圍的AMR資料沒更新狀態下會 進行空間位置推估 目前只會推估 5s內斷訊的AMR資訊
+    4. try to fix pause -> resume -> pause problem
+    
+[System]
+    1. before player start force restart bluetooth
+    2. Fixed bug::修正模擬充電站無法 Dock to Dock的問題，原因為出充電站後，沒有消除OnDockPos標記 (沒有足夠空間旋轉)
+    3. update C901_94, 95 msirobot.cfg
+    4. improve the control loop time more accuracy
+    5. Bugs#1478: System_回報音效問題
+       說明：
+       當機器在PAUSE狀態下 此時插入搖桿進行遙控
+       而插入遙控完成移轉控制權的通知時
+       語音並非PLEASE wait for ai ready , ai is ready
+       而是 pinboad ( 救援模式的語音)
+    6. 加入自動化更新程序 需要配合 V1.8.364 以上才可
+    7. Update Startup.py in /home/pyuser
+       =======
+       1. Add the standby() with the "Initial End" ai name in the end
+       2. 加入檢查"/data/etc/start_up.json" 這檔案是否存在如果存在會根據這個檔案的內容進行讀圖以及重新定位
+    8. 加快 BLE 更新速度為 10Hz
+---------------------------------------------------------------------------------------------------		
+V1.8.363:
+20250507
+[AI]  
+    1. 修正 Fiducial沒訊號時的最高等待時間
+    2. Fixed bug:: turn theta
+    3. Fixed bug::修正Undock時，遇到 Sensor lost，高機率會回報失敗
+    
+[TF]
+    1. try to fix meLeavingAwayMutex
+    
+[System]
+    1. before player start force restart bluetooth
+---------------------------------------------------------------------------------------------------
+V1.8.362:
+20250428
+[TF]
+    1. 修正要出mutex的估算方法
+    2. 修正讀取 traffic_control_config 為 每幾秒會去讀取檔案一次方便之後測試之用
+    3. 加回減速度距離估測以進行提早減速避免衝過頭 實測 1m/s運行 OK
+    4. 修正 AMR移動速度原本從 SLAM來改從chassis來
+    5. 修正暫停後必須過2秒才能繼續 避免平繁的 pause/resume
+    6. 提高從 wifi 來的資訊更新速度
+    7. 加入進入mutex前的速度估測
+    8. 修正無法正確排隊問題
+    
+[daemon]
+    1. fix get_map_information and get_map_group, get wrong data problem
+    
+[UI]
+    1. 修正UI motor on 沒語音問題 
+    
+[system]
+    1. add mtor control box at postion2d allow  request version and serial
+    2. add filter log in position2d-filter0/position2d-filter1
+    
+[AI]
+    1. 修正PF的小bug，函式顯示不清楚
+---------------------------------------------------------------------------------------------------
+V1.8.361:
+20250416
+[AI]
+    1. 修正行為中的速度上限顯示
+    2. 修正莫名的速度降低 (取值錯誤)
+---------------------------------------------------------------------------------------------------
+V1.8.360:
+20250415
+[AI]
+    1. 修正未成功停靠時，會旋轉碰撞充電站
+    2. 修正SLAM calcuating 會更改Status、Info問題
+    3.CFG:增加充電訊號不消失的測試項
+    4.增加"應急"充電站訊號不消失選項
+
+
+[TC]
+    1. 透過  tf.cfg 可以設定 lineup_distance 的距離或者關閉排隊功能，有些應用不需要排隊功能 如果真要設定必須設定在 PP之前的距離
+    2. 修正暫停失效問題
+    3. 修正時間交換以秒為單位修正為 0.1秒為單位避免時間相同造成的問題
+    4. 修正透過 get_ble 的最大 timeout 時間從 5s 修改為 0.5秒
+
+[system]
+    1. power board log always output
+    2. 移除之前機器跑很快煞車的過程會以為電池在充電的 path
+---------------------------------------------------------------------------------------------------
+V1.8.359:
+20250410
+[AI]
+    a. 修正原地旋轉的防撞圈顯示錯誤
+    b. 修正未成功停靠時，會旋轉碰撞充電站
+    c. 修正SLAM calcuating 會更改Status、Info問題
+    
+[tf]
+    a. 修正透過wifi交換訊息的方法，透過thread可以處理不同AMR之間的訊息交換並且提高交換訊息的速度來避免mutex area跑過頭問題
+    
+[system]
+    a. MSI-00-00-00-00-00-86 cfg fix
+    b. Fix "AllFolderSyncer" sometimes not work issue because of SSH cert
+
+---------------------------------------------------------------------------------------------------
+V1.8.358:
+20250408
+[SLAM]
+    in hoayuSLAM and hoayuSLAM2-CL, modify SLAM position2d.status for slam:laser off.
+    when slam:laser off, SLAM position2d.status=10.
+    
+[AI]
+    a. Fixed bug: PF 後方障礙物影響機器不會前進
+    b. Fixed bug:修正在充電站上呼叫機器去另一個充電站，會有行為錯亂的問題
+    c. Fixed bug: 修正機器在充電站上時，指定去另一個充電站，行為出錯問題
+    d. 修正原地旋轉不會動
+    e. Fixed bug: 精準停靠點沒有執行出站動作
+    f. Fixed bug:: 修正精準停靠時，原地旋轉觸碰充電站
+    g. 修正限速區，速度驟降時，機器急煞問題，主因為強制判斷了速度上限
+    
+[daemon]
+    a. read_file  add tail command
+       {
+         "read_file" : {
+           "name" : "/var/run/dev_life_recorder.cfg"
+           "cmd" : "tail -n 10"   #方便指定讀取某個檔案的特定行數 因為有時檔案會很大部必要全讀
+         },
+       }
+    
+    b. read_file add more detail response
+
+[system]
+    a. update 88, 92 calicrate file
+    
+[tf]
+    a. add debug_level update how to check whoAtMyTarget
+
+---------------------------------------------------------------------------------------------------
+V1.8.357:
+20250324
+[AI]
+    a. 修正Dock邏輯衝突
+    b. Fixed bug:: 修正模擬路徑時，環境偵測沒有發揮作用的問題
+    c. 修正Tag只有看到單一個，造成的停靠不順
+[system]
+    a. fix simulation crash problem
+    b. update 86 90 91 93 msirobot.cfg
+    c. fix 修正如果目標點很近 但有AMR佔住目標點，但AMR要繞的路仍很遠才會到達目標點而AMR暫停的問題
+---------------------------------------------------------------------------------------------------
+V1.8.356:
+20250314
+[system]
+    a. update C901-89 msirobot.cfg
+    b. update C901-87 msirobot.cfg file
+    c. update C901-83 calibrate file
+    d. 加入 but2 除了 pause/resume 外
+       長壓 3s 可以進行馬達煞車釋放
+       馬達煞車釋放長壓 3s又會回到servo on
+    e. update C901-71 odometry file
+    f. modify for SIMULATOR model
+       all the HW check move to boot_robot
+    g. add "motor free" and "motor on" voice
+    
+[TC]
+    1. 加入檢查車輛運行方向，才部會造成車輛用屁股方向對著我走我還以為我要排隊在他後面因而暫停下來排隊
+    2. 修正前台AMR 舉例在 index=1 排隊但我從 index=4 在後面排隊不會正常排隊問題
+    3. meLeavingAwayMutex 如果前方 是 mutex area 且內部已經有AMR 就不允許穿過
+    4. 加入讀取SLAM map 以及 mutex MAP
+    5. 加入debug map
+    6. 加入自動閃避進入避車彎 (測試 結果不佳) 讀取防撞資訊
+    7. 加入group概念 同群的允許一同進入mutex area，這對車隊群排隊進入mutex area很有幫助。
+    8. 如果不想要用group概念，group設定跟AMR name 一樣就可
+    
+[AI]
+    1. 統一重試、等待、顯示規則
+    2. Dock更改流程
+    3. 修正模擬器可能看到的 status錯誤問題
+---------------------------------------------------------------------------------------------------
+V1.8.354:
+20250226
+[system]
+    a. 加入以下這行 確保 opencl GPU 支持 FP64:
+        export OverrideDefaultFP64Settings=1 && export IGC_EnableDPEmulation=1
+        intel NEO GPU have no HW FP64
+        that is why need it...
+    b. 為了確保影像品質，因此AMR車上的燈不能閃爍 @dock behavior
+[AI]
+    a. Fixed bug: simulate dock bug
+    b. 更新Dock，可以使用單一Tag進行精準停靠
+    c. Fixed bug: dock TurnTheta error
+---------------------------------------------------------------------------------------------------
+V1.8.353:
+20250221
+
+[AI]
+    1.統一所有行為的行動、暫停、等待、重試、顯示...etc 行為邏輯 (之前是各行為自己有一份)
+    2.因應// 20250124 桃園工廠data格式錯誤，增加data的語法與報錯
+    3.統一精準沿點參數
+    4.修正PF接路時，旋轉過頭問題，主因為路徑算出來時，機器已衝過頭
+    5.增加 Dock signal_offset_py 調整量
+    6.統一所有行為的 retry、timeOut規則
+    7.修正PF不會Avoid問題1.
+[system]
+    1.針對低光源下，曝光時間過長會造成影像模糊無法看清楚 tag 無法辨識問題
+    2.修正當影像資料有過度曝光狀態下資料不輸出 整合在一起的資訊，但是單獨的tag資訊仍會輸出
+    3.避免停靠過程中曝光調整過慢 乾脆把尾燈關掉
+    4.fix map_0.map.md5 permissions
+    5.in hoayuSLAM, add map_wall_threshold in testcommandstring.
+       testcommandstring 172.16.50.46 2 F "map_wall_threshold" 0.65
+	   
+---------------------------------------------------------------------------------------------------
+V1.8.353:
+20250124
+
+[AI]
+    1.增加SinglePa的修正量
+    
+---------------------------------------------------------------------------------------------------
+V1.8.352:
+20250121
+
+[AI]
+    1.Fixed bug:: PF 的Retry、Timeout與文件敘述不符，應為 Retry & Timeout 都觸發才停止行為
+    2.Fixed bug:: PF 的Avoid觸發不易，已修正
+    
+[System]
+    1. stop systemd-timesyncd to sync time. time sync to FMS only by /etc/cron.hourly/sync-time
+    2. Extend "ExtraPresetCmd" bond to mission step name (or function name in Script.py)
+---------------------------------------------------------------------------------------------------
+V1.8.351:
+[AI]
+    a. Fixed bug::PF 起始位置，接點錯誤，Start_From未發揮功效
+    
+[system]
+    a.  No 84 update calibration data
+---------------------------------------------------------------------------------------------------
+V1.8.350:
+[AI]
+    1. 顯示PF目前使用的路徑
+    2. 修正PF追點錯誤
+    3. Scan時，可以指定Warning的範圍 (@pf_FB#, @pf_LR)
+    4. upgrade PF
+[TC]
+    1. TC add more debug message
+    2. try to fix BLE beacon open close repeat problem
+[System]
+    1. No 61 change IPC
+---------------------------------------------------------------------------------------------------
+V1.8.349:
+[AI]
+    a. Fixed bug: 修正一堆Tag密集排列時，指定ID無效問題
+[System]
+    a. try to fix DriverReload failure problem
+    b. increase max frequency from 3000MHz to 4000MHz try to fix control lag problem
+---------------------------------------------------------------------------------------------------
+V1.8.348:
+[AI]
+  a. Add new command SCAN(32)
+  b. modify for IDAKA use AMR laser to detect danger area and make robot ARM stop or pause running project
+  
+[System]
+  a. Improve "debug_SensorDisplayOption" function in device.py
+  b. Fix "Cannot open FMS" issue when memory is not enough
+---------------------------------------------------------------------------------------------------
+V1.8.347:
+[traffic control]
+  a. if traffic_control config file not exist will create it to prevent crash problem
+  b. update the AmrPauseDeceleration from 0.7 to 0.9m/s^2
+  c. if traffic_control config not exist will create it
+  
+[AI]
+  a. 增加Dock info，有障礙物造成停靠失敗
+  b. add info PLAYER_DISPATCH_AI_DOCK_ABORT_OBJECT_BETWEEN_GOAL  958  //Dock 障礙物在機器與目標之間
+  c. Fixed bug: 解決充電站周圍擺滿辨識板，機器會出現甩尾離開停靠點問題 (因辨識到新目標)
+  d. 增加顯示AI目前使用座標，與測試SLAM飄移
+  
+[System]
+  a. C901-66 因無法完美SLAM closing loop(大圈)，重新校正
+  b. update C901-83 calibrate file
+  c. Fixed bug: TF的TurnTheta會無限迴圈
+  d. C901-71 recalibrate again. Can't closing
+  e. joystick depend on GC300 FW:MSI_3306_DEVICE_TEST_V155 to do modify
+  f. allow pyuser use ttyS2 and ttyS3
+  g. No.77 3D camera calibration
+  h. add No84 machine update rear LDS ignore area. because the ME 組裝公差過大
+  i. Improve "debug_SensorDisplayOption" function in device.py
+---------------------------------------------------------------------------------------------------
+V1.8.346:
+[system]
+    a. modify for debian 12
+	b. change MSI-00-00-00-00-00-62 as model:C901
+[JS]
+    a. fix jsProduct head and tail have space problem
+	b. modify for GC300 FW:MSI_3306_DEVICE_TEST_V155
+---------------------------------------------------------------------------------------------------
+V1.8.345:
+[AI]
+    a. add 顯示機器本身資訊：暫停、是否控制底盤
+	b. in PathPlanning.cpp, fix a bug of save reverse Jpeg image.
+	c. 修正接續路徑的轉向錯誤
+	d. 修正 sensor 顯示問題
+    e. 修正 PF 等待障礙物無窮迴圈問題
+	
+[traffic control]
+    a. move traffic control config file to /data/etc/traffic_control not use args any more
+	
+[js]
+    a. 修改搖桿程序來支援後面不同案例的開發，允許重新定義搖桿的 function 透過 /data/etc/extra_joystick 內的 python  檔來進行
+---------------------------------------------------------------------------------------------------
+V1.8.344:
+1. [system]
+    a. 以桃園工廠為實證進行調整 realsense ghost issue
+    b. 修正for GC300搖桿有線模式不正確問題，起因在有線無線下的 product 名子不一樣造成
+    c. fix:
+         ipv4=$(ip addr show $wlan | grep -q 'inet ')
+         if [ ${ipv4} -eq 0 ]; then  
+          
+         crash problem
+    d. add motordriver-um01
+    e. try to fix camera lost problem
+    f. 修正for GC300搖桿有線模式不正確問題，起因在有線無線下的 product 名子不一樣造成
+    g. blue add reset driver before open device
+        
+2. [AI]
+    a. 因應自動曝光調整，切換時fps 15->6 可能會掉封包，0.2s
+    b.Fixed bug:: 修正PF變換路線時，出現超過90度的旋轉
+    c.Fixed bug:: 修正TryAgain沒有作用的錯誤
+    
+3. [traffic control]
+    a. fix map_uuid initial value is not correct it will cause tc.py program crash
+    b. 修正 find meLeavingAwayMutex 誤判問題，造成pause過晚而無法正常排隊問題
+    
+---------------------------------------------------------------------------------------------------
+V1.8.343:
+[System]
+  a.  加入以 USB Product name 為主的cfg 這樣才有辦法透過搖桿的 Product name 去找相對應的 搖桿cfg 設定質 誰叫公司要換搖桿
+  b. tagsearch  除了會參考tag調整曝光外也會參考當下環境亮度一併調整曝光質/針對太陽光干擾調整 more robust
+  
+[AI]  
+  a. camera_lost_threshold::因應自動曝光調整，切換時fps 15->6 可能會掉封包，0.2s
+---------------------------------------------------------------------------------------------------
+V1.8.342:
+[system]
+    fix: tagsearch MinDisBrightness crash problem
+---------------------------------------------------------------------------------------------------
+V1.8.341:
+[factory]
+    a. calibration laser 針對較長的 AMR 所做的修正
+    b. get device info add BLE mac information
+    c. 81號機發現前方LDS看到後方機殼，為了cover 組裝公差直接加大容忍誤差
+    e. update 81 calibration file
+    f. reset to default will remove /data/map8192_acl; /data/robotShapePP; /data/AI_ShapePP
+    
+[system]
+    a.透過調整曝光亮度無法改善深度資訊 ghost 問題，因此停止此功能
+    b.3D camera liv 經過測試可以將 4個 sensor 放在同一個Hub上面進行工作
+    c.3Dcamera readlsense add u_diameter, v_diameter for realsense
+      Mitigation of Repetitive Pattern Effect of
+      Intel® RealSense™ Depth Cameras D400 Seriesit can be
+    d. slow down SW exposure control
+    e. update 反電動勢 消除 門檻
+    f. update find the nearest and brightest tage as ControlExposure reference
+    g. add position1d test program
+    h. add kmeans program
+    i. add config 反電動勢 消除 voltage for 1 to 2 motor control box
+    
+[AI]
+    a.fixed bug: PF在終點邊界會有走停走停問題
+    b.fixed bug: 修正camera lost問題
+---------------------------------------------------------------------------------------------------
+V1.8.340:
+V1.8.339:
+V1.8.338:
+[System]
+    a.修正 camera 卡死問題
+---------------------------------------------------------------------------------------------------
+V1.8.337:
+[System]
+    a. add calibration 3D camera via see same tag
+    b. update auto exposure via PI controller
+    c. update MotionPlanning return value
+    d. update realsense auto exposure via SW try to fix noise problem
+    e. update C901-67 calibrate file
+    f. add mirle1T model
+    
+[AI]
+    a. turnTheta: 使用累加參數，避免 +-Pi 跳界造成的不連續動作規劃
+    b. Nav2顯示硬體速度上限與來源
+    c. Fixed bug::TurnTheta位置與機器相隔>4cm以上時，會被忽略
+---------------------------------------------------------------------------------------------------
+V1.8.336:
+[UI]
+    fix ui after reset error the LED still red problem
+    
+[AI]
+    1.顯示機器目前內部狀態
+    2.fixed bluez bug
+    3.增加 Project A debug模式，用Nav2觀看為什麼無法提速
+    
+[system]
+   1.加入利用 tag 進行自動調整曝光,用以修正 因為光源問題造成的 tag測不準問題
+---------------------------------------------------------------------------------------------------
+V1.8.335:
+[AI]
+    a. Fixed bug: SmartUpdate太久 (30sec)，造成地圖儲存錯誤
+    b. 增加離開充電站、精準停靠點，指定方向和距離參數
+    c. 顯示等待、卡住資訊
+    d. add check if json data is correct or not
+    
+[TC]
+    a. 修正當area_index_timestamp 時間相同下 比對名子出錯的問題
+    
+[System]
+    a. add systemd-timesyncd
+    b. 增加離開充電站、精準停靠點，指定方向和距離參數
+    c. No79. calibration camera for IDAKA
+---------------------------------------------------------------------------------------------------
+V1.8.334:
+[system]
+    a. 降低點速度避免馬達超轉發出錯誤
+    b. fix if the battery can't get correct ManufacturerDate it will cause crash problem
+    c. update C901-85 calibration file
+    d. fix IPV6 dhcp WIFI always reboot problem
+    
+[tc]
+    a. SMC 的人要求有這樣的功能,進到mutex area 要等數秒後才能走<default is not enable>
+    b. fix two AMR pause and resume at the same time cause problem
+
+
+---------------------------------------------------------------------------------------------------
+V1.8.333:
+[System]
+    a.Fix startup cannot set size issue (for newest script.py)
+	b.Fix some machine eth2 not setup correct problem
+---------------------------------------------------------------------------------------------------
+V1.8.332:
+[AI]
+    a.Fixed bug:: ShapePP 背景小地圖更新干擾到整塊大地圖，造成SmartUpdate錯誤
+    b.Fixed bug:: 底盤反饋的速度值，造成出載具時，誤判機器目前正在移動，導致行進方向判斷錯誤
+    
+[SLAM]
+    a. in hoayuSLAM2-CL, add relocate_status=-10 for position2d-filter with same relocation cases (for example, ResetSLAM()).
+    b. in position2d-filter1, fix a bug on vx value.
+    
+[System]
+    a. fix some machine eth2 ip not setup problem
+---------------------------------------------------------------------------------------------------
+V1.8.331:
+[js]
+    a. when JS use AI to do behavior will cancel camera
+    
+[system]
+    a. C9011 update BLE config
+	
+---------------------------------------------------------------------------------------------------
+V1.8.330:
+[js]
+    a. when JS use AI to do behavior will cancel camera
+    
+[system]
+    a. C9011 update BLE config
+	
+---------------------------------------------------------------------------------------------------
+V1.8.330:
+[AI]
+   a. Fixed bug: 修正預處理PP時，造成SmartUpdate使用的merge_map_p錯誤，沒有虛擬牆
+
+[TC]
+   a. modify blue velocity from chassis not from SLAM. SLAM velocity have shark problem when AMR is still.
+   it will cause when AMR make a line the line up machine will not thing the forward machine not move.
+   so cause 20240923_traffic issue
+
+---------------------------------------------------------------------------------------------------
+V1.8.328:
+[AI]    
+    a. 提高脫困機率
+    b. 增加PF卡住測試
+	
+---------------------------------------------------------------------------------------------------
+V1.8.325:
+[TC]
+    a. 修正交管排隊IsMoving 資訊錯誤問題，造成無法正常排隊
+    
+[AI]
+    a. Fixed bug: 修正出站或脫離貨架時，因TurnTheta失敗導致的轉圈圈
+    b. Fixed bug:PF命令沒有速度值
+    c. add 顯示原地卡住的秒數
+    
+[System]
+    a. 加入以物理限制的位置濾波器，降低SLAM 位置輸出的跳動問題
+    b. 45 號機修改為 1 對 1 控制盒
+    c. 78 號機修改為 1 對 2 控制盒
+---------------------------------------------------------------------------------------------------
+V1.8.325:
+[TC]
+    a. 修正交管排隊IsMoving 資訊錯誤問題，造成無法正常排隊
+    
+[AI]
+    a. Fixed bug: 修正出站或脫離貨架時，因TurnTheta失敗導致的轉圈圈
+    b. Fixed bug:PF命令沒有速度值
+    c. add 顯示原地卡住的秒數
+    
+[System]
+    a. 加入以物理限制的位置濾波器，降低SLAM 位置輸出的跳動問題
+    b. 45 號機修改為 1 對 1 控制盒
+    c. 78 號機修改為 1 對 2 控制盒
+---------------------------------------------------------------------------------------------------
+V1.8.324:
+[AI] 
+   a. Fixed bug::減少外部輸入路徑時，轉換地圖格點又轉回世界座標造成的鋸齒路徑誤差，導致行走時的搖擺
+   b. 改善PF移動時的擺動
+   c. 長方形PP的Save不能跟SLAM_Save合用, 無法確定使用者儲存之前對地圖做了甚麼(Refresh、Sensor off)
+   d. 修正忽略抖動產生的無窮迴圈，可能是SMC的Bug復現
+   e. in PathPlanning.cpp, add OpenCL_init=2 when -1010001 (not match OpenCL platform name) for fix a bug when frequently pathplan with wrong OpenCL platform name (frequently initial will crash). 若平台名稱指定錯誤時。
+   g.先發一次Error，” AI_PARAMETER_ERROR” 提醒參數設定錯誤
+   h.之後切換為 ”平台名稱未指定” 規則。(不考慮效能(CPU or GPU)，但須計算出路徑)
+[TC]
+    a. area_index_timestamp 16bit -> 32bit
+    
+---------------------------------------------------------------------------------------------------
+V1.8.321:
+[AI]
+    a.修正Tag顏色定義 (軟體說明)
+    b.修正跟隨晃動
+    c.修正M2T、PF脫困的Bug，原本呼叫avoid的條件為PP沒路，光靠PP判斷容易有bug，還是相信防撞偵測
+    
+[TC]
+    a.try to fix update information via WIFI will block problem
+---------------------------------------------------------------------------------------------------
+V1.8.320:
+[AI] 
+    a. if communication failure will reset() once
+    b. Fixed bug:修正離開充電站時，有時會誤關CameraIR問題
+    c. Fixed bug:精準停靠結束狀態錯誤問題
+    d. 顯示Move2Position的跟隨點
+    e. in PathPlanning.cpp, disable /data/dump/AI_Debug/es_map0.txt.jpg log for Carlos debug.
+
+[SLAM]
+    a. rangefinder_landmark_min_distance_inAutoClosingLoop
+    b. rangefinder_landmark_max_distance_inAutoClosingLoop
+    c. second_rangefinder_landmark_min_distance_inAutoClosingLoop
+    d. second_rangefinder_landmark_min_distance_inAutoClosingLoop
+      in cfg and testcommandstring for control building landmarks when AutoClosingLoop.
+
+[TC]
+    a. TC use core 0
+    b. use UTC time to do reference if in mutex area
+    
+[InuDev]
+    a. communication failure reset
+    b. add when projector off will fix ExposureTime
+       it will improve detect aprial tag ability
+       
+[System]
+    a. C9013 add 一顆馬達有錯 兩顆馬達一起停機
+    b. when use DHCP get ip. if dhclient.wlan0.leases and dhcp server not math will delete it and get a new one
+    c. change  build landmark policy
+---------------------------------------------------------------------------------------------------
+V2.8.318:
+1. [JS]
+    a. fix sometime un-plug js AMR will not stop by client_remote. stop by chassis timeout
+    b. modify plug-in JS and un-plug stop AMR dec via BreakMax acc
+    
+2. [AI]
+    a. Fixed bug:修正模擬充電站位置錯誤
+    b. in PathPlanning.cpp,
+      1. add NonBlockDebugWriteJpeg class for saving jpeg image.
+      2. add SaveGrayscaleJpeg function for saving grayscale jpeg image.
+      3. change saving debug PGM file to Jpeg file.
+    c. 更新精準停靠
+      
+3. [TC]
+   a.修正交管改採用 UTC time 不採用 duration 時間差進行比對誰先進誰後進 mutex area
+     但 AMR 必須對 NTP server 進行時間同步才能正常運行
+     
+4. [UM01]
+   a. IO 邏輯的STO 就可以不用接
+   
+5. [SLAM]
+   a.disable landmarks when slam relocates.
+   
+6. [SYSTEM]
+   a. add GetCell boundary check
+   b. add C9013 default config
+      C9013   >> OLEI lida + realsense D435 + DEV 系列(I04)雙驅直流無刷馬達驅動器(motor control box)*2 + skypower 48V battery
+---------------------------------------------------------------------------------------------------
